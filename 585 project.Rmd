@@ -1,0 +1,209 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+library(dplyr)
+library(tidyverse) 
+library(AER)
+library(ivpack)
+library(plm) #import packages i needed 
+```
+
+
+```{r}
+mydata<-read.csv('/Users/caseycloutier/Desktop/Theses/Honors585 Paper Data/cleaned data/finaldata.csv') #import data file
+
+mydata[is.na(mydata)] <- 0 #replaces NA values with 0
+
+mydata$year20 <- ifelse(mydata$Year == '2020', 1, 0) #create dummy for if year is 2020
+mydata$year21 <- ifelse(mydata$Year == '2021', 1, 0) #create dummy for if year is 2021
+
+
+mydata<-mydata %>% 
+  rename(
+    Vax_Rate = Series_Complete_18PlusPop_Pct,
+    U_Rate=UR_rate
+    )
+```
+
+
+
+```{r}
+library(stargazer) #mport stargazer package
+
+sumstatsdata<- mydata[, c("U_Rate", "Vax_Rate", 'trump_True', 'Percent_Female','Percent_Black','Percent_AmerInd', 'Percent_PacI','Percent_Asian','Percent_HisLat','ALWAYS','Q_GDP')] 
+#create summary statistics table of variables i am using 
+```
+```{r}
+stargazer(sumstatsdata, type="text", title="Summary Statistics", out="/Users/caseycloutier/Desktop/Theses/Honors585 Paper Data/paper graphs/sumstats.html")
+#save sum stats table to desired location
+```
+```{r}
+
+cortable <- cor(sumstatsdata)
+round(cortable, 2)
+
+stargazer(cortable, type="text", title="Cor Table", out="/Users/caseycloutier/Desktop/Theses/Honors585 Paper Data/paper graphs/cortable.html")
+```
+```{r}
+data20<-mydata[mydata$year20 == "1", ] 
+data21<-mydata[mydata$year21 == "1", ] #create dummy variables for 2020 and 2021
+```
+```{r}
+pols<-plm(U_Rate~ Vax_Rate , data=mydata, index = c("CountyName_x", "Date"), model = "pooling") #regress UR onto var of interest
+```
+
+```{r}
+
+pols_cntrl<-plm(U_Rate~ Vax_Rate+trump_True + Percent_Female + Percent_Black +Percent_AmerInd +Percent_PacI+Percent_Asian+Percent_HisLat+ALWAYS + log(Q_GDP)+trump_True*Vax_Rate, data = mydata,index = c("CountyName_x", "Date"), model = "pooling" ) #regress UR onto var of int. and cntrls
+```
+
+
+```{r}
+mydata$Lagged_Vax <- c(NA, mydata$Vax_Rate[-nrow(mydata)])
+mydata$Lagged_Vax[which(!duplicated(mydata$CountyName_x))] <- NA
+#create lagged variable for vax rate
+
+```
+
+
+```{r}
+pols_lag<-plm(U_Rate~ Vax_Rate+Lagged_Vax +trump_True + Percent_Female + Percent_Black +Percent_AmerInd +Percent_PacI+Percent_Asian+Percent_HisLat+ALWAYS + log(Q_GDP)+trump_True*Lagged_Vax, data = mydata,index = c("CountyName_x", "Date"), model = "pooling" )
+#regress UR onto lagged vax rate w controls
+
+```
+
+
+
+```{r}
+G <- length(unique(mydata$CountyName_x))
+N <- length(mydata$CountyName_x) 
+dfa <- (G/(G - 1)) * (N - 1)/pols$df.residual
+dfacntrl<-(G/(G - 1)) * (N - 1)/pols_cntrl$df.residual
+dfalag<-(G/(G - 1)) * (N - 1)/pols_lag$df.residual
+#adjusting degrees of freedom for clustered robust standard errors 
+
+cluster_se <- dfa * vcovHC(pols, type = "HC0", cluster = "group", adjust = T)
+cluster_se_cntrl<-dfacntrl * vcovHC(pols_cntrl, type = "HC0", cluster = "group", adjust = T)
+cluster_se_lag<-dfalag * vcovHC(pols_lag, type = "HC0", cluster = "group", adjust = T)
+#creating the clustered robust standard errors
+
+stargazer(pols,pols_cntrl, pols_lag, type = "html",se = list(cluster_se,cluster_se_cntrl,cluster_se_lag), out="/Users/caseycloutier/Desktop/Theses/Honors585 Paper Data/paper graphs/pols_cse.html")
+#put regression output with clustered standard errors into stargazer 
+```
+
+
+```{r}
+reg_fe<-plm(U_Rate~ Vax_Rate+log(Q_GDP)+factor(State)+factor(Date), data = mydata, index =c("CountyName_x", "Date"), model = "within", effect = "twoways")
+#fixed effects regression for vax rate in same month 
+
+lagreg_fe<-plm(U_Rate~ Vax_Rate+Lagged_Vax+log(Q_GDP)+factor(State)+factor(Date), data = mydata, index = c("CountyName_x", "Date"),model = "within", effect = "twoways")
+#fixed effects regression for vax rate in month prior 
+
+summary(reg_fe)
+summary(lagreg_fe)
+#print regression result 
+```
+```{r}
+dfareg_fe <- (G/(G - 1)) * (N - 1)/reg_fe$df.residual
+dfalagreg_fe<-(G/(G - 1)) * (N - 1)/lagreg_fe$df.residual
+#df adjustments for fe models 
+
+regfe_cse<- dfareg_fe * vcovHC(reg_fe, type = "HC0", cluster = "group", adjust = T)
+lagregfe_cse<-dfalagreg_fe * vcovHC(lagreg_fe, type = "HC0", cluster = "group", adjust = T)
+#creating the clustered robust standard errors
+
+stargazer(reg_fe, lagreg_fe, type = "html",se = list(regfe_cse,lagregfe_cse), out="/Users/caseycloutier/Desktop/Theses/Honors585 Paper Data/paper graphs/fixed_cse.html")
+#put fe regression outputs with clustered standard errors into stargazer 
+```
+
+
+
+```{r}
+diff1<-lm(U_Rate~ Policies+factor(State)+factor(Date)+factor(Date):factor(State)+Vax_Rate+log(Q_GDP), data = mydata)
+#diff-in-diff regression using state vaccine mandates as treatment, state and time trends included 
+
+diff1_notrends<-lm(U_Rate~Policies+factor(State)+factor(Date)+Vax_Rate+log(Q_GDP), data = mydata)
+#diff-in-diff regression using state vaccine mandates as treatment, trends not included 
+```
+
+
+```{r}
+summary(diff1)
+summary(diff1_notrends)
+#print regression reults for diff-diff
+```
+
+
+```{r}
+diff2<-lm(U_Rate~ Policies+factor(State)+factor(Date)+factor(Date):factor(State)+Vax_Rate+Lagged_Vax+log(Q_GDP), data = mydata)
+#diff-in-diff regression using state vaccine mandates as treatment, w/ trends
+
+diff2_notrends<-lm(U_Rate~Policies+factor(State)+factor(Date)+Vax_Rate+Lagged_Vax+log(Q_GDP), data = mydata)
+##diff-in-diff regression using state vaccine mandates as treatment, no trends 
+```
+
+```{r}
+summary(diff2)
+summary(diff2_notrends)
+```
+
+
+```{r}
+dfadiff1<- (G/(G - 1)) * (N - 1)/diff1$df.residual
+dfadiff1_nt<-(G/(G - 1)) * (N - 1)/diff1_notrends$df.residual
+dfadiff2<- (G/(G - 1)) * (N - 1)/diff2$df.residual
+dfadiff2_nt<-(G/(G - 1)) * (N - 1)/diff2_notrends$df.residual
+
+#df adjustments for diff-diffs
+
+```
+
+```{r}
+
+diff1_cse<- dfadiff1 * vcovHC(diff1, type = "HC0", cluster = "group", adjust = T)
+diff1nt_cse<-dfadiff1_nt * vcovHC(diff1_notrends, type = "HC0", cluster = "group", adjust = T)
+#create clustered robust se 
+
+```
+
+```{r}
+diff2_cse<- dfadiff2 * vcovHC(diff2, type = "HC0", cluster = "group", adjust = T)
+diff2nt_cse<-dfadiff2_nt * vcovHC(diff2_notrends, type = "HC0", cluster = "group", adjust = T)
+#creating the clustered robust standard errors for diff-diffs
+
+```
+
+```{r}
+#create stargazer table for diff-diff
+stargazer(diff1, diff2, diff1_notrends, diff2_notrends, 
+          digits = 3,
+          header = FALSE,
+          type = "html", 
+          se = list(diff1_cse, diff2_cse,diff1nt_cse,diff2nt_cse),
+          model.numbers = FALSE,
+          omit = c("Date","State"),
+          column.labels = c("(1)", "(2)","(3)","(4)"),
+          add.lines=list(c("State Trends","Yes", "Yes","No", "No")),
+          out='/Users/caseycloutier/Desktop/Theses/Honors585 Paper Data/paper graphs/diff_reg.html')
+```
+```{r}
+
+```
+
+
+
+
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
